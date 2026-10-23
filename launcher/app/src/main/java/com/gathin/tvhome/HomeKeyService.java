@@ -30,15 +30,17 @@ import java.util.Set;
  * (Xiaomi sticks and boxes). Android TV 9 routes that key only to the system-image launcher, so once
  * the stock launcher is disabled the button does nothing. Every other key passes through untouched.
  *
- * With stock_home_redirect set, it also sends the stock launcher's home screen back here, for firmware that turns
- * that launcher on again after it was disabled (XGIMI's xrmservice does, on its own remote keys), or that cannot be
- * disabled at all, and a short press of Home opens this launcher even when the stock home is already on screen.
+ * With stock_home_redirect set, KEYCODE_HOME is consumed (Aerial-style) so the system never opens
+ * the stock desktop first; window events from that package remain a backup redirect.
  *
  * Enable over adb:
  *   settings put secure enabled_accessibility_services com.gathin.tvhome/.HomeKeyService
  *   settings put secure accessibility_enabled 1
  */
 public class HomeKeyService extends AccessibilityService {
+
+    /** Bound instance for {@link ServiceRepair#rebindIfStale}; null when not running. */
+    private static volatile HomeKeyService running;
 
     /** restore_key_services was on when the config was read: this helper is noted for ServiceRepair. */
     private boolean repairRecord;
@@ -54,6 +56,8 @@ public class HomeKeyService extends AccessibilityService {
 
     /** Waits for the user to unlock when Android binds this service at boot; null once the config is read. */
     private BroadcastReceiver unlockReceiver;
+    /** CLOSE_SYSTEM_DIALOGS with reason=homekey (some firmwares announce Home this way). */
+    private BroadcastReceiver homeDialogReceiver;
     /** The stock launcher's HOME activities (stock_home_redirect), disabled ones included. */
     private final Set<String> stockHome = new HashSet<>();
     /** Package of stock_home_redirect; TCL window events often use a non-HOME class name. */
@@ -61,9 +65,25 @@ public class HomeKeyService extends AccessibilityService {
     /** Stops key filtering while a game controller is connected; null unless gamepad_passthrough and key_filter, or before the unlock. */
     private GamepadPassthrough gamepads;
 
+    private final Handler handler = new Handler(Looper.getMainLooper());
+
+    /** Double-Home window (Aerial: 400 ms). */
+    private static final long HOME_DOUBLE_MS = 400L;
+    private long lastHomeDownEventTime = Long.MIN_VALUE / 2;
+    private boolean homeConsumedAsDoubleOrLong;
+    private final Runnable homeLongPress = () -> {
+        homeConsumedAsDoubleOrLong = true;
+        performGlobalAction(GLOBAL_ACTION_RECENTS);
+    };
+
+    static boolean isRunning() {
+        return running != null;
+    }
+
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
+        running = this;
         settingsScancodes = getResources().getIntArray(R.array.settings_key_scancodes);
         // The service is directBootAware: Android 11 skips a service that is not while the user is still
         // locked at boot, writes accessibility_enabled=0 and, on TCL G03 firmware, never binds it after the
@@ -97,7 +117,10 @@ public class HomeKeyService extends AccessibilityService {
     @Override
     public void onDestroy() {
         stopWaitingForUnlock();
+        unregisterHomeDialogReceiver();
         if (gamepads != null) gamepads.stop();
+        if (running == this) running = null;
+        handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
 
@@ -107,7 +130,10 @@ public class HomeKeyService extends AccessibilityService {
         // restore_key_services: note that this helper runs, so Home can put it back after a force stop. Here, not
         // in onServiceConnected: the note is in credential-protected storage too, readable only after the unlock.
         repairRecord = config.restoreKeyServices;
-        if (repairRecord) ServiceRepair.connected(this, getClass());
+        if (repairRecord) {
+            ServiceRepair.connected(this, getClass());
+            ServiceRepair.restore(this);
+        }
         settingsKeycodes = config.settingsKeycodes;
         settingsPanel = config.settingsKeyPanel;
         appKeys = RemoteKeys.parseAppKeys(config.appKeys);
@@ -120,6 +146,7 @@ public class HomeKeyService extends AccessibilityService {
             for (ResolveInfo ri : getPackageManager().queryIntentActivities(home, PackageManager.MATCH_DISABLED_COMPONENTS)) {
                 stockHome.add(ri.activityInfo.name);
             }
+            registerHomeDialogReceiver();
         }
         // Ensure window events stay on even if a theme reload cleared them (XML already requests them).
         AccessibilityServiceInfo info = getServiceInfo();
@@ -139,6 +166,34 @@ public class HomeKeyService extends AccessibilityService {
             gamepads = new GamepadPassthrough(this);
             gamepads.start();
         }
+    }
+
+    private void registerHomeDialogReceiver() {
+        if (homeDialogReceiver != null) return;
+        homeDialogReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (!Intent.ACTION_CLOSE_SYSTEM_DIALOGS.equals(intent.getAction())) return;
+                if (!"homekey".equals(intent.getStringExtra("reason"))) return;
+                // Firmware announced Home without a filtered key event; bring our launcher up.
+                openHome(true);
+            }
+        };
+        IntentFilter filter = new IntentFilter(Intent.ACTION_CLOSE_SYSTEM_DIALOGS);
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(homeDialogReceiver, filter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(homeDialogReceiver, filter);
+        }
+    }
+
+    private void unregisterHomeDialogReceiver() {
+        if (homeDialogReceiver == null) return;
+        try {
+            unregisterReceiver(homeDialogReceiver);
+        } catch (RuntimeException ignored) {
+        }
+        homeDialogReceiver = null;
     }
 
     private boolean isSettingsKey(KeyEvent event) {
@@ -168,13 +223,38 @@ public class HomeKeyService extends AccessibilityService {
         }
         if (RemoteKeys.handle(this, event, appKeys.get(event.getKeyCode()),
                 holdAppKeys.get(event.getKeyCode()))) return true;
+        // Aerial-style: consume KEYCODE_HOME so the system never opens cyberui first.
         if (event.getKeyCode() == KeyEvent.KEYCODE_HOME && !stockHomePackage.isEmpty()) {
-            redirectHomeKey(event);
-            return false;
+            return handleHomeKey(event);
         }
         if (event.getKeyCode() != KeyEvent.KEYCODE_ALL_APPS) return false;
         if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
-            openHome();
+            openHome(true);
+        }
+        return true;
+    }
+
+    /**
+     * Consume Home: short press opens this launcher immediately; double within 400 ms or long press
+     * opens Recents. Returning true stops TCL from launching cyberui on the same press.
+     */
+    private boolean handleHomeKey(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            homeConsumedAsDoubleOrLong = false;
+            handler.removeCallbacks(homeLongPress);
+            if (event.getEventTime() - lastHomeDownEventTime < HOME_DOUBLE_MS) {
+                homeConsumedAsDoubleOrLong = true;
+                lastHomeDownEventTime = Long.MIN_VALUE / 2;
+                performGlobalAction(GLOBAL_ACTION_RECENTS);
+            } else {
+                handler.postDelayed(homeLongPress, ViewConfiguration.getLongPressTimeout());
+            }
+        } else if (event.getAction() == KeyEvent.ACTION_UP) {
+            handler.removeCallbacks(homeLongPress);
+            if (!event.isCanceled() && !homeConsumedAsDoubleOrLong) {
+                lastHomeDownEventTime = event.getEventTime();
+                openHome(true);
+            }
         }
         return true;
     }
@@ -183,6 +263,7 @@ public class HomeKeyService extends AccessibilityService {
     @Override
     public boolean onUnbind(Intent intent) {
         if (repairRecord) ServiceRepair.disconnected(this, getClass());
+        if (running == this) running = null;
         return super.onUnbind(intent);
     }
 
@@ -195,11 +276,11 @@ public class HomeKeyService extends AccessibilityService {
         if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return;
         if (isStockHomeEvent(event)) {
-            openHome();
+            openHome(true);
             return;
         }
         // WINDOWS_CHANGED may omit packageName; peek the active window.
-        if (type == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isStockHomeOnTop()) openHome();
+        if (type == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isStockHomeOnTop()) openHome(true);
     }
 
     private boolean isStockHomeEvent(AccessibilityEvent event) {
@@ -245,36 +326,24 @@ public class HomeKeyService extends AccessibilityService {
         return boot >= 0 && boot != lastBoot && uptimeMs < BOOT_WINDOW_MS;
     }
 
-    /** Lets the system see the key, so a long press still does what the firmware gives it. */
-    private static final long HOME_KEY_DELAY_MS = 250;
-    private final Handler handler = new Handler(Looper.getMainLooper());
-
-    /** stock_home_redirect on the Home key: when the stock home is already on screen (it came up at boot, before
-     *  Android bound this service), Home brings it up again with no window change, so the redirect above never
-     *  fires and the TV stays on the stock home until another app opens (#1116). A short press opens this
-     *  launcher shortly after the system has handled the key; a long press (Google TV's quick settings) is left
-     *  alone. Held time, not repeats: key repeats are made after accessibility filtering, so none arrive here. */
-    private void redirectHomeKey(KeyEvent event) {
-        if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()
-                && isShortPress(event.getDownTime(), event.getEventTime(), ViewConfiguration.getLongPressTimeout())) {
-            // Two kicks: soon after the system brings cyberui up, then again if the first lost the race.
-            handler.postDelayed(this::openHome, 80);
-            handler.postDelayed(this::openHome, HOME_KEY_DELAY_MS);
-        }
-    }
-
     static boolean isShortPress(long downTime, long upTime, long longPressTimeout) {
         return upTime - downTime < longPressTimeout;
     }
 
-    /** Debounce cyberui↔us bounce loops (TCL fires several window events per Home). */
-    private static final long OPEN_HOME_DEBOUNCE_MS = 400;
+    /** Soft debounce only for non-forced opens; cyberui / Home key always force. */
+    private static final long OPEN_HOME_DEBOUNCE_MS = 120;
     private long lastOpenHomeAt;
 
     /** Open this launcher without category.HOME (TCL blocks sideloaded HOME apps). */
     private void openHome() {
+        openHome(false);
+    }
+
+    private void openHome(boolean force) {
         long now = SystemClock.uptimeMillis();
-        if (now - lastOpenHomeAt < OPEN_HOME_DEBOUNCE_MS) return;
+        if (!force && now - lastOpenHomeAt < OPEN_HOME_DEBOUNCE_MS) return;
+        // Even forced opens: collapse a burst of identical cyberui window events in the same frame.
+        if (force && now - lastOpenHomeAt < 40) return;
         lastOpenHomeAt = now;
         Intent home = new Intent(this, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK

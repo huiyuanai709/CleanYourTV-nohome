@@ -801,6 +801,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         super.onStart();
         stopped = false;
         started = true;
+        // Aerial-style revival: rewrite enabled_accessibility_services if TCL cleared HomeKeyService.
+        if (Config.load(this).restoreKeyServices) ServiceRepair.restore(this);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(timeReceiver, timeFilter, Context.RECEIVER_NOT_EXPORTED);
         } else {
