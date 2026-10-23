@@ -11,8 +11,8 @@ android {
         applicationId providers.gradleProperty('launcherApplicationId').getOrElse('com.gathin.tvhome')
         minSdk 26
         targetSdk 34
-        versionCode 13
-        versionName '2.6-aerial-guard'
+        versionCode 15
+        versionName '2.6-big-tiles-sweden'
     }
 
     buildTypes {

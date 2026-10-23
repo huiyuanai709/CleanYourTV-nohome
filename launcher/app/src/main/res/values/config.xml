@@ -19,14 +19,13 @@
     <string-array name="dock_apps">
         <item>com.tcl.settings</item>
         <item>com.tcl.MultiScreenInteraction_TV</item>
-        <item>com.tcl.miracast</item>
         <item>com.tcl.ui_mediaCenter</item>
         <item>com.tcl.tv</item>
     </string-array>
     <!-- With fewer dock_apps than columns (or a dock app that is not installed), the free dock slots take
          the first grid apps, so the dock never shows a gap. false leaves them empty (#162); a theme can
          set "fill_dock": false. -->
-    <bool name="fill_dock">true</bool>
+    <bool name="fill_dock">false</bool>
 
     <!-- Apps never shown as tiles (e.g. the Live TV app, which the Inputs menu already covers). -->
     <string-array name="hidden_apps">
@@ -68,6 +67,10 @@
     <!-- A tile's artwork instead of the app's banner: "package=drawable", a banner_* drawable bundled with the
          launcher (res/drawable). banner_tv is a magenta field with the Live TV glyph. -->
     <string-array name="app_banners">
+        <item>com.tcl.settings=banner_settings</item>
+        <item>com.tcl.MultiScreenInteraction_TV=banner_cast</item>
+        <item>com.tcl.ui_mediaCenter=banner_media</item>
+        <item>com.tcl.tv=banner_tv</item>
     </string-array>
 
     <!-- TVs with no TvInputManager have no HDMI list to read, but their own source-selection panel
@@ -267,7 +270,7 @@
 
     <!-- Tiles per row in the grid; the dock always has this many slots. Tiles are 180dp wide at 4 columns and
          shrink to fit from 5 up (about 144dp at 5, 117dp at 6 on a 1080p TV). -->
-    <integer name="columns">5</integer>
+    <integer name="columns">4</integer>
 
     <!-- Basic motion is on; advanced effects are opt-in in the launcher's own Settings screen. -->
     <bool name="animations">true</bool>
