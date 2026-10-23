@@ -20,7 +20,7 @@
         <item>com.tcl.settings</item>
         <item>com.tcl.MultiScreenInteraction_TV</item>
         <item>com.tcl.miracast</item>
-        <item>com.tcl.videoplayer</item>
+        <item>com.tcl.ui_mediaCenter</item>
         <item>com.tcl.tv</item>
     </string-array>
     <!-- With fewer dock_apps than columns (or a dock app that is not installed), the free dock slots take
@@ -267,7 +267,7 @@
 
     <!-- Tiles per row in the grid; the dock always has this many slots. Tiles are 180dp wide at 4 columns and
          shrink to fit from 5 up (about 144dp at 5, 117dp at 6 on a 1080p TV). -->
-    <integer name="columns">4</integer>
+    <integer name="columns">5</integer>
 
     <!-- Basic motion is on; advanced effects are opt-in in the launcher's own Settings screen. -->
     <bool name="animations">true</bool>
@@ -289,6 +289,11 @@
          (many China-market TVs, e.g. Coocaa 8R145), a fresh Home with app_library on would otherwise be
          nearly empty. Empty (off) by default, so existing setups change nothing. -->
     <string-array name="library_apps" translatable="false">
+        <item>com.tcl.settings</item>
+        <item>com.tcl.MultiScreenInteraction_TV</item>
+        <item>com.tcl.miracast</item>
+        <item>com.tcl.ui_mediaCenter</item>
+        <item>com.tcl.tv</item>
     </string-array>
 
     <!-- Module cards: an app that declares a card (docs/specs/card.md) can stand in for its tile with its own

@@ -261,6 +261,14 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                 if (ri.activityInfo != null && added.contains(ri.activityInfo.packageName)
                         && seen.add(ri.activityInfo.packageName)) found.add(ri);
             }
+            // China-market TCL apps often ship with neither LAUNCHER nor LEANBACK (Miracast,
+            // Live TV). Without a ResolveInfo they never become dock tiles and fill_dock
+            // backfills with unrelated apps. Prefer MAIN (any category), then known components.
+            for (String pkg : added) {
+                if (!seen.add(pkg)) continue;
+                ResolveInfo extra = resolveLibraryPackage(pm, pkg);
+                if (extra != null) found.add(extra);
+            }
         }
         Map<String, Cards.Card> cardByPkg = new HashMap<>();
         for (Cards.Card c : cards) cardByPkg.put(c.pkg, c);
@@ -324,6 +332,50 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         items.clear();
         items.addAll(fresh);
         notifyDataSetChanged();
+    }
+
+
+    /**
+     * Resolve a library/dock package that has no LAUNCHER or LEANBACK entry: try MAIN with
+     * the package alone, then known TCL components, then getLaunchIntentForPackage.
+     */
+    private ResolveInfo resolveLibraryPackage(PackageManager pm, String pkg) {
+        for (ResolveInfo ri : pm.queryIntentActivities(
+                new Intent(Intent.ACTION_MAIN).setPackage(pkg), 0)) {
+            if (ri.activityInfo != null && ri.activityInfo.exported) return ri;
+        }
+        String cls = null;
+        if ("com.tcl.miracast".equals(pkg)) cls = "com.tcl.miracast.MainActivity";
+        else if ("com.tcl.tv".equals(pkg)) cls = "com.tcl.tv.TVActivity";
+        else if ("com.tcl.settings".equals(pkg)) cls = "com.tcl.settings.ui.MainActivity";
+        if (cls != null) {
+            ComponentName cn = new ComponentName(pkg, cls);
+            Intent probe = new Intent(Intent.ACTION_MAIN).setClassName(pkg, cls);
+            if (pm.resolveActivity(probe, 0) != null) {
+                try {
+                    ResolveInfo ri = new ResolveInfo();
+                    ri.activityInfo = pm.getActivityInfo(cn, 0);
+                    return ri;
+                } catch (PackageManager.NameNotFoundException ignored) {
+                }
+            }
+            try {
+                ResolveInfo ri = new ResolveInfo();
+                ri.activityInfo = pm.getActivityInfo(cn, 0);
+                if (ri.activityInfo != null) return ri;
+            } catch (PackageManager.NameNotFoundException ignored) {
+            }
+        }
+        Intent launch = pm.getLaunchIntentForPackage(pkg);
+        if (launch != null && launch.getComponent() != null) {
+            try {
+                ResolveInfo ri = new ResolveInfo();
+                ri.activityInfo = pm.getActivityInfo(launch.getComponent(), 0);
+                return ri;
+            } catch (PackageManager.NameNotFoundException ignored) {
+            }
+        }
+        return null;
     }
 
     /** A banner_* drawable bundled with the launcher, or null for none or a name that is not one. */
