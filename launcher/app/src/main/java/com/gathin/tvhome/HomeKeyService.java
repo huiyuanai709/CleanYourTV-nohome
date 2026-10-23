@@ -121,10 +121,14 @@ public class HomeKeyService extends AccessibilityService {
                 stockHome.add(ri.activityInfo.name);
             }
         }
-        // home_key_service.xml subscribes to no events, so the redirect asks for window changes only when it is on.
+        // Ensure window events stay on even if a theme reload cleared them (XML already requests them).
         AccessibilityServiceInfo info = getServiceInfo();
         if (info != null && !stockHomePackage.isEmpty()) {
-            info.eventTypes |= AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
+            info.eventTypes |= AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                    | AccessibilityEvent.TYPE_WINDOWS_CHANGED;
+            info.flags |= AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+                    | AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
+            info.feedbackType |= AccessibilityServiceInfo.FEEDBACK_GENERIC;
             setServiceInfo(info);
         }
         if (!stockHomePackage.isEmpty()) probeAtBoot();
@@ -186,14 +190,36 @@ public class HomeKeyService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         // stock_home_redirect: the firmware turned the stock launcher back on and its home screen came up.
         // TCL cyberui often reports a non-HOME class in the window event; match package too (Aerial-style).
-        if (stockHomePackage.isEmpty() || event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
-        CharSequence pkg = event.getPackageName();
-        if (pkg != null && stockHomePackage.equals(pkg.toString())) {
+        if (stockHomePackage.isEmpty()) return;
+        int type = event.getEventType();
+        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return;
+        if (isStockHomeEvent(event)) {
             openHome();
             return;
         }
+        // WINDOWS_CHANGED may omit packageName; peek the active window.
+        if (type == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isStockHomeOnTop()) openHome();
+    }
+
+    private boolean isStockHomeEvent(AccessibilityEvent event) {
+        CharSequence pkg = event.getPackageName();
+        if (pkg != null && stockHomePackage.equals(pkg.toString())) return true;
         CharSequence cls = event.getClassName();
-        if (cls != null && stockHome.contains(cls.toString())) openHome();
+        return cls != null && stockHome.contains(cls.toString());
+    }
+
+    /** True when cyberui (or another stock_home_redirect activity) owns the active window. */
+    private boolean isStockHomeOnTop() {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return false;
+            CharSequence pkg = root.getPackageName();
+            root.recycle();
+            return pkg != null && stockHomePackage.equals(pkg.toString());
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     /** How long after boot the first bind still counts as "at boot" for probeAtBoot. */
@@ -231,6 +257,8 @@ public class HomeKeyService extends AccessibilityService {
     private void redirectHomeKey(KeyEvent event) {
         if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()
                 && isShortPress(event.getDownTime(), event.getEventTime(), ViewConfiguration.getLongPressTimeout())) {
+            // Two kicks: soon after the system brings cyberui up, then again if the first lost the race.
+            handler.postDelayed(this::openHome, 80);
             handler.postDelayed(this::openHome, HOME_KEY_DELAY_MS);
         }
     }
@@ -239,12 +267,21 @@ public class HomeKeyService extends AccessibilityService {
         return upTime - downTime < longPressTimeout;
     }
 
+    /** Debounce cyberui↔us bounce loops (TCL fires several window events per Home). */
+    private static final long OPEN_HOME_DEBOUNCE_MS = 400;
+    private long lastOpenHomeAt;
+
     /** Open this launcher without category.HOME (TCL blocks sideloaded HOME apps). */
     private void openHome() {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastOpenHomeAt < OPEN_HOME_DEBOUNCE_MS) return;
+        lastOpenHomeAt = now;
         Intent home = new Intent(this, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                         | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                        | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                        | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                        | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         home.putExtra("home_press", true);
         try {
             startActivity(home);

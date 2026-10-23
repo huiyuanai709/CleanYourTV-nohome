@@ -348,6 +348,7 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         if ("com.tcl.miracast".equals(pkg)) cls = "com.tcl.miracast.MainActivity";
         else if ("com.tcl.tv".equals(pkg)) cls = "com.tcl.tv.TVActivity";
         else if ("com.tcl.settings".equals(pkg)) cls = "com.tcl.settings.ui.MainActivity";
+        else if ("com.tcl.ui_mediaCenter".equals(pkg)) cls = "com.tcl.ui_mediaCenter.main.MainActivity";
         if (cls != null) {
             ComponentName cn = new ComponentName(pkg, cls);
             Intent probe = new Intent(Intent.ACTION_MAIN).setClassName(pkg, cls);
