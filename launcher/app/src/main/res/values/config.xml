@@ -21,6 +21,7 @@
         <item>com.tcl.MultiScreenInteraction_TV</item>
         <item>com.tcl.miracast</item>
         <item>com.tcl.videoplayer</item>
+        <item>com.tcl.tv</item>
     </string-array>
     <!-- With fewer dock_apps than columns (or a dock app that is not installed), the free dock slots take
          the first grid apps, so the dock never shows a gap. false leaves them empty (#162); a theme can
