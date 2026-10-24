@@ -10,6 +10,7 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.os.UserManager;
 import android.content.pm.PackageManager;
@@ -78,6 +79,75 @@ public class HomeKeyService extends AccessibilityService {
 
     static boolean isRunning() {
         return running != null;
+    }
+
+    /** Settle before taking Home at BOOT_COMPLETED (Aerial SETTLE_MS). */
+    private static final long SETTLE_MS = 1500L;
+    private static final long[] BOOT_RECHECKS_MS = {30_000L, 45_000L};
+    private final Runnable bootRecheck = () -> {
+        if (SystemClock.elapsedRealtime() < BOOT_WINDOW_MS) takeOverIfStockHomeInFront("looking again after boot");
+    };
+
+    /**
+     * Aerial HomeGuardService.onBootCompleted: when the helper is already bound at
+     * BOOT_COMPLETED, look again (settle + rechecks). Returns false if not running so the
+     * receiver can start MainActivity itself.
+     */
+    static boolean onBootCompleted() {
+        final HomeKeyService s = running;
+        if (s == null) return false;
+        s.handler.post(() -> {
+            PowerManager pm = (PowerManager) s.getSystemService(POWER_SERVICE);
+            if (pm != null && !pm.isInteractive()) return;
+            if (s.isOurLauncherOnTop()) return;
+            s.handler.removeCallbacks(s.bootSettleTakeOver);
+            s.handler.postDelayed(s.bootSettleTakeOver, SETTLE_MS);
+            s.scheduleBootRechecks();
+        });
+        return true;
+    }
+
+    private final Runnable bootSettleTakeOver = () -> takeOverIfStockHomeInFront("boot completed");
+
+    private void scheduleBootRechecks() {
+        handler.removeCallbacks(bootRecheck);
+        for (long delay : BOOT_RECHECKS_MS) {
+            handler.postDelayed(bootRecheck, delay);
+        }
+    }
+
+    /**
+     * Bring this launcher up when cyberui (or an unknown front right after boot) is showing.
+     * Leave alone when another app or HDMI input owns the screen (Aerial takeOverIfStockHomeInFront).
+     */
+    private void takeOverIfStockHomeInFront(String reason) {
+        if (stockHomePackage.isEmpty()) {
+            openHome(true);
+            return;
+        }
+        if (isOurLauncherOnTop()) return;
+        if (isStockHomeOnTop()) {
+            openHome(true);
+            return;
+        }
+        // No active window yet: treat like Aerial's null lastWindow and take over.
+        try {
+            if (getRootInActiveWindow() == null) openHome(true);
+        } catch (RuntimeException ignored) {
+            openHome(true);
+        }
+    }
+
+    private boolean isOurLauncherOnTop() {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return false;
+            CharSequence pkg = root.getPackageName();
+            root.recycle();
+            return pkg != null && getPackageName().equals(pkg.toString());
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     @Override
@@ -158,7 +228,11 @@ public class HomeKeyService extends AccessibilityService {
             info.feedbackType |= AccessibilityServiceInfo.FEEDBACK_GENERIC;
             setServiceInfo(info);
         }
-        if (!stockHomePackage.isEmpty()) probeAtBoot();
+        if (!stockHomePackage.isEmpty()) {
+            probeAtBoot();
+            // Aerial: rechecks at 30s/45s catch cyberui coming up after boot ads / late windows.
+            if (SystemClock.elapsedRealtime() < BOOT_WINDOW_MS) scheduleBootRechecks();
+        }
         holdAppKeys = RemoteKeys.parseHoldAppKeys(config.appKeys);
         holdAppScancodes = RemoteKeys.parseHoldAppScancodes(config.appKeys);
         // gamepad_passthrough, off by default. Only with key_filter on: off, the service never filters keys.

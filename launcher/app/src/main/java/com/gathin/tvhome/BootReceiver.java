@@ -7,8 +7,9 @@ import android.os.Handler;
 import android.os.Looper;
 
 /**
- * After boot, re-arm HomeKeyService via {@link ServiceRepair} and bring the launcher up if the
- * accessibility service is not yet bound (Aerial BootReceiver, clean-room).
+ * After boot, re-arm HomeKeyService via {@link ServiceRepair} and bring the launcher up.
+ * Matches Aerial BootReceiver: when the accessibility helper is already bound, ask it to look
+ * again (HomeKeyService.onBootCompleted); only start MainActivity from here if it is not.
  */
 public class BootReceiver extends BroadcastReceiver {
     private static final long[] BOOT_RECHECK_MS = {30_000L, 45_000L};
@@ -27,7 +28,9 @@ public class BootReceiver extends BroadcastReceiver {
         for (long delay : BOOT_RECHECK_MS) {
             handler.postDelayed(() -> ServiceRepair.restore(context.getApplicationContext()), delay);
         }
-        if (HomeKeyService.isRunning()) return;
+        // Aerial: if HomeGuard is already running, it takes over again at BOOT_COMPLETED
+        // (bound ~20s earlier on some firmwares; probe-at-bind may have missed cyberui).
+        if (HomeKeyService.onBootCompleted()) return;
         try {
             context.startActivity(new Intent(context, MainActivity.class)
                     .setAction(Intent.ACTION_MAIN)
