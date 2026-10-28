@@ -59,9 +59,11 @@ public class HomeKeyService extends AccessibilityService {
     private BroadcastReceiver unlockReceiver;
     /** CLOSE_SYSTEM_DIALOGS with reason=homekey (some firmwares announce Home this way). */
     private BroadcastReceiver homeDialogReceiver;
-    /** The stock launcher's HOME activities (stock_home_redirect), disabled ones included. */
+    /** HOME activity class names of stock launchers (disabled ones included). */
     private final Set<String> stockHome = new HashSet<>();
-    /** Package of stock_home_redirect; TCL window events often use a non-HOME class name. */
+    /** Packages that act as stock Home (config stock_home_redirect plus CATEGORY_HOME). */
+    private final Set<String> stockHomePackages = new HashSet<>();
+    /** Primary package from stock_home_redirect (for boot probe / empty check). */
     private String stockHomePackage = "";
     /** Stops key filtering while a game controller is connected; null unless gamepad_passthrough and key_filter, or before the unlock. */
     private GamepadPassthrough gamepads;
@@ -121,7 +123,7 @@ public class HomeKeyService extends AccessibilityService {
      * Leave alone when another app or HDMI input owns the screen (Aerial takeOverIfStockHomeInFront).
      */
     private void takeOverIfStockHomeInFront(String reason) {
-        if (stockHomePackage.isEmpty()) {
+        if (stockHomePackages.isEmpty()) {
             openHome(true);
             return;
         }
@@ -209,26 +211,19 @@ public class HomeKeyService extends AccessibilityService {
         appKeys = RemoteKeys.parseAppKeys(config.appKeys);
         appScancodes = RemoteKeys.parseAppScancodes(config.appKeys);
         RemoteKeys.applyKeyFilter(this, config.keyFilter);
-        stockHome.clear();
-        stockHomePackage = config.stockHomeRedirect == null ? "" : config.stockHomeRedirect.trim();
-        if (!stockHomePackage.isEmpty()) {
-            Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setPackage(stockHomePackage);
-            for (ResolveInfo ri : getPackageManager().queryIntentActivities(home, PackageManager.MATCH_DISABLED_COMPONENTS)) {
-                stockHome.add(ri.activityInfo.name);
-            }
+        refreshStockHomes(config.stockHomeRedirect);
+        if (!stockHomePackages.isEmpty()) {
             registerHomeDialogReceiver();
-        }
-        // Ensure window events stay on even if a theme reload cleared them (XML already requests them).
-        AccessibilityServiceInfo info = getServiceInfo();
-        if (info != null && !stockHomePackage.isEmpty()) {
-            info.eventTypes |= AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                    | AccessibilityEvent.TYPE_WINDOWS_CHANGED;
-            info.flags |= AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-                    | AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
-            info.feedbackType |= AccessibilityServiceInfo.FEEDBACK_GENERIC;
-            setServiceInfo(info);
-        }
-        if (!stockHomePackage.isEmpty()) {
+            // Ensure window events stay on even if a theme reload cleared them (XML already requests them).
+            AccessibilityServiceInfo info = getServiceInfo();
+            if (info != null) {
+                info.eventTypes |= AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                        | AccessibilityEvent.TYPE_WINDOWS_CHANGED;
+                info.flags |= AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+                        | AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
+                info.feedbackType |= AccessibilityServiceInfo.FEEDBACK_GENERIC;
+                setServiceInfo(info);
+            }
             probeAtBoot();
             // Aerial: rechecks at 30s/45s catch cyberui coming up after boot ads / late windows.
             if (SystemClock.elapsedRealtime() < BOOT_WINDOW_MS) scheduleBootRechecks();
@@ -298,7 +293,7 @@ public class HomeKeyService extends AccessibilityService {
         if (RemoteKeys.handle(this, event, appKeys.get(event.getKeyCode()),
                 holdAppKeys.get(event.getKeyCode()))) return true;
         // Aerial-style: consume KEYCODE_HOME so the system never opens cyberui first.
-        if (event.getKeyCode() == KeyEvent.KEYCODE_HOME && !stockHomePackage.isEmpty()) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_HOME && !stockHomePackages.isEmpty()) {
             return handleHomeKey(event);
         }
         if (event.getKeyCode() != KeyEvent.KEYCODE_ALL_APPS) return false;
@@ -341,37 +336,75 @@ public class HomeKeyService extends AccessibilityService {
         return super.onUnbind(intent);
     }
 
+    /** After an app's own Exit, TCL often resumes cyberui a beat late; re-check a few times. */
+    private static final long[] EXIT_RECHECKS_MS = {300L, 800L, 1_500L, 3_000L};
+    private final Runnable exitRecheck = () -> {
+        if (isStockHomeOnTop()) openHome(true);
+    };
+
+    private void scheduleExitRechecks() {
+        handler.removeCallbacks(exitRecheck);
+        for (long delay : EXIT_RECHECKS_MS) {
+            handler.postDelayed(exitRecheck, delay);
+        }
+    }
+
+    /**
+     * Aerial-style: discover every CATEGORY_HOME package (plus stock_home_redirect), so exiting a
+     * system app into any stock desktop — not only cyberui — brings CleanYourTV back.
+     */
+    private void refreshStockHomes(String configured) {
+        stockHome.clear();
+        stockHomePackages.clear();
+        stockHomePackage = configured == null ? "" : configured.trim();
+        if (!stockHomePackage.isEmpty()) stockHomePackages.add(stockHomePackage);
+        PackageManager pm = getPackageManager();
+        Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
+        for (ResolveInfo ri : pm.queryIntentActivities(home, PackageManager.MATCH_DISABLED_COMPONENTS)) {
+            String pkg = ri.activityInfo.packageName;
+            if (getPackageName().equals(pkg)) continue;
+            stockHomePackages.add(pkg);
+            stockHome.add(ri.activityInfo.name);
+        }
+        // Also collect HOME activities of the configured package alone (some are disabled).
+        if (!stockHomePackage.isEmpty()) {
+            Intent one = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setPackage(stockHomePackage);
+            for (ResolveInfo ri : pm.queryIntentActivities(one, PackageManager.MATCH_DISABLED_COMPONENTS)) {
+                stockHome.add(ri.activityInfo.name);
+            }
+        }
+    }
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // stock_home_redirect: the firmware turned the stock launcher back on and its home screen came up.
-        // TCL cyberui often reports a non-HOME class in the window event; match package too (Aerial-style).
-        if (stockHomePackage.isEmpty()) return;
+        // Stock desktop came back (Home key miss, or a system app's own Exit): bring ours up.
+        // TCL cyberui often reports a non-HOME class; match package too (Aerial-style).
+        if (stockHomePackages.isEmpty()) return;
         int type = event.getEventType();
         if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return;
-        if (isStockHomeEvent(event)) {
+        if (isStockHomeEvent(event) || (type == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isStockHomeOnTop())) {
             openHome(true);
-            return;
+            // App Exit → stock home can win a race after our first startActivity; look again.
+            scheduleExitRechecks();
         }
-        // WINDOWS_CHANGED may omit packageName; peek the active window.
-        if (type == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isStockHomeOnTop()) openHome(true);
     }
 
     private boolean isStockHomeEvent(AccessibilityEvent event) {
         CharSequence pkg = event.getPackageName();
-        if (pkg != null && stockHomePackage.equals(pkg.toString())) return true;
+        if (pkg != null && stockHomePackages.contains(pkg.toString())) return true;
         CharSequence cls = event.getClassName();
         return cls != null && stockHome.contains(cls.toString());
     }
 
-    /** True when cyberui (or another stock_home_redirect activity) owns the active window. */
+    /** True when any stock Home package owns the active window. */
     private boolean isStockHomeOnTop() {
         try {
             android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
             if (root == null) return false;
             CharSequence pkg = root.getPackageName();
             root.recycle();
-            return pkg != null && stockHomePackage.equals(pkg.toString());
+            return pkg != null && stockHomePackages.contains(pkg.toString());
         } catch (RuntimeException ignored) {
             return false;
         }
@@ -419,10 +452,12 @@ public class HomeKeyService extends AccessibilityService {
         // Even forced opens: collapse a burst of identical cyberui window events in the same frame.
         if (force && now - lastOpenHomeAt < 40) return;
         lastOpenHomeAt = now;
+        // Aerial bringBackIntent: ACTION_MAIN + NEW_TASK + RESET_TASK_IF_NEEDED (same task as launcher).
+        // Keep REORDER_TO_FRONT / SINGLE_TOP so an already-running CleanYourTV wins over cyberui after Exit.
         Intent home = new Intent(this, MainActivity.class)
+                .setAction(Intent.ACTION_MAIN)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                         | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                        | Intent.FLAG_ACTIVITY_CLEAR_TOP
                         | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                         | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         home.putExtra("home_press", true);

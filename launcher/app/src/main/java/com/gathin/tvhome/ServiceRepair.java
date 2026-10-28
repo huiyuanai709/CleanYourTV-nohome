@@ -45,6 +45,7 @@ final class ServiceRepair {
 
     /** Re-enable recorded helpers and always HomeKeyService; also arm the notification listener. */
     static void restore(Context context) {
+        RevivalSync.ensure(context);
         if (!hasSecureWrite(context)) return;
         ensureAccessibility(context);
         ensureNotificationListener(context);
