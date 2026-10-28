@@ -3,15 +3,15 @@
 Android can leave `enabled_accessibility_services` naming the launcher's `HomeKeyService` while
 `accessibility_enabled` reads `0`: on a TCL C6K Pro (`G08`, Android 14) that is what a reboot left
 behind, so nothing was bound, the Home button opened Google TV, and the page's two existing cases (a
-force stop that empties the list, and a firmware `APP_AUTO_START` denial) did not describe it. The
-launcher's own `restore_key_services` does not reach this state either: `ServiceRepair.restore()` writes
-`ACCESSIBILITY_ENABLED` only after it has put a missing helper back on the list, and returns early when
-the list is already complete.
+force stop that empties the list, and a firmware `APP_AUTO_START` denial) did not describe it.
+`ServiceRepair.ensureAccessibility()` now writes `ACCESSIBILITY_ENABLED` even when the list already
+names the helper (no early return on a complete list before the flag write), so with
+`restore_key_services` and `WRITE_SECURE_SETTINGS` the launcher repairs this state itself.
 
 Documentation only, so the tests pin what a reader has to be able to act on - both settings, the dump,
 the three commands, the device it was seen on - and pin the claim about `ServiceRepair` to its own code,
-so the note cannot go stale if the launcher starts repairing that state too. A misspelled `settings`
-key or a wrong class name sends a reader back to "nothing changed".
+so the note cannot go stale if that repair path changes again. A misspelled `settings` key or a wrong
+class name sends a reader back to "nothing changed".
 
 Run from the repository root: python3 -m unittest discover -s tests -v
 """
@@ -55,11 +55,10 @@ def section(text, heading):
 
 
 def flag_written_after_the_list_check(java):
-    """True when `ServiceRepair` writes the flag only once it has also finished the enabled list.
+    """True when `ServiceRepair` writes the flag only after an `if (!missing) return;` early exit.
 
-    The note tells a reader that `restore_key_services` cannot repair a complete list, which is true
-    only while the flag write sits after the `if (!missing) return;` early exit. Once the launcher
-    repairs this state itself, this test fails and the note has to say so instead.
+    Used to detect the old gated write. Current `ensureAccessibility` writes the flag even when the
+    list is already complete, so the live test asserts this helper is False against ServiceRepair.java.
     """
     body = java.split("static void restore(Context context)")[1]
     early_return = body.find("if (!missing) return;")
@@ -113,12 +112,15 @@ class AccessibilityFlagNoteTest(unittest.TestCase):
         self.assertIn("restore_key_services", self.note)
         self.assertIn("ServiceRepair", self.note)
 
-    def test_service_repair_still_returns_before_writing_the_flag(self):
+    def test_service_repair_writes_the_flag_even_when_the_list_is_complete(self):
         # The note's claim, checked against the code it names rather than against the wording.
-        self.assertTrue(flag_written_after_the_list_check(self.java),
-                        "ServiceRepair now writes the flag on a complete list too: the note says it "
-                        "does not, so reword the note (and this test) with the launcher change")
+        self.assertFalse(flag_written_after_the_list_check(self.java),
+                         "ServiceRepair again gates ACCESSIBILITY_ENABLED behind a complete-list "
+                         "early return: reword the note (and this test) if that path comes back")
         self.assertIn("ENABLED_ACCESSIBILITY_SERVICES", self.java)
+        self.assertIn("ACCESSIBILITY_ENABLED", self.java)
+        self.assertIn("restore_key_services", self.note)
+        self.assertIn("even when the list already names the helper", self.note)
 
     def test_themes_readme_still_scopes_restore_key_services_to_a_force_stop(self):
         row = next(line for line in self.themes.split("\n")

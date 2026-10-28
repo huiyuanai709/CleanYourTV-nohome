@@ -556,11 +556,12 @@ running back on the list the next time it starts; a helper turned off in Setting
   [#1047](https://github.com/Gathin23/cleanyourtv/issues/1047)) a reboot left
   `enabled_accessibility_services` naming `com.gathin.tvhome/com.gathin.tvhome.HomeKeyService` while
   `accessibility_enabled` read `0`, `dumpsys accessibility` showed `Bound services:{}` and the Home
-  button opened Google TV. `restore_key_services` does not repair this state: `ServiceRepair` writes
-  `accessibility_enabled 1` only on the path that also puts a missing helper back on the list, and here
-  the list was complete. Write the flag back, then read the dump again; toggling the service off and on
-  in Accessibility, which is what the owner did, brought the redirect back for that session. Whether the
-  flag survives the next reboot was not retested on that set, and what cleared it is not established.
+  button opened Google TV. With `restore_key_services` and `WRITE_SECURE_SETTINGS`, `ServiceRepair`
+  now writes `accessibility_enabled 1` even when the list already names the helper (it no longer
+  returns early on a complete list before setting the flag). If that grant is missing, write the flag
+  back by hand, then read the dump again; toggling the service off and on in Accessibility, which is
+  what the owner did, brought the redirect back for that session. Whether the flag survives the next
+  reboot was not retested on that set, and what cleared it is not established.
   On a TCL 65C655 Pro (`G03`, Android 11, [`examples/tcl-55c725`](../examples/tcl-55c725/README.md)) every
   one of three reboots left the same state, and there writing the flag back alone bound nothing; clearing
   `enabled_accessibility_services` and writing it back, as `build-and-install` does, did:

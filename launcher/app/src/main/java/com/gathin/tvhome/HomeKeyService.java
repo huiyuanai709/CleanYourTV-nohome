@@ -237,6 +237,7 @@ public class HomeKeyService extends AccessibilityService {
         }
     }
 
+    @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
     private void registerHomeDialogReceiver() {
         if (homeDialogReceiver != null) return;
         homeDialogReceiver = new BroadcastReceiver() {
@@ -249,8 +250,10 @@ public class HomeKeyService extends AccessibilityService {
             }
         };
         IntentFilter filter = new IntentFilter(Intent.ACTION_CLOSE_SYSTEM_DIALOGS);
+        // CLOSE_SYSTEM_DIALOGS is unprotected; API 33+ needs an explicit export flag. Prefer
+        // NOT_EXPORTED so only the system (and this app) can deliver it. Pre-33 has no flag API.
         if (android.os.Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(homeDialogReceiver, filter, Context.RECEIVER_EXPORTED);
+            registerReceiver(homeDialogReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
             registerReceiver(homeDialogReceiver, filter);
         }
