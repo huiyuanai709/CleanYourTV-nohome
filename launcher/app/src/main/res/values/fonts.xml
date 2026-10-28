@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The UI fonts, looked up through these strings so a locale can swap in a system family: Outfit has no
-     glyphs for most Vietnamese accented letters, so values-vi points them at the system sans-serif (#833). -->
+     glyphs for most Vietnamese accented letters, so values-vi points them at the system sans-serif (#833).
+     outfit.ttf is the Google Fonts variable face with wght pinned to 100–500 (Thin default through Medium),
+     the range font_* actually uses; dropping 501–900 keeps the release APK under the 480 KB gate. -->
 <resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="ReferenceType">
     <string name="font_body" translatable="false">@font/outfit</string>
     <string name="font_regular" translatable="false">@font/outfit_regular</string>
